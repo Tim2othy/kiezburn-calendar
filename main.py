@@ -1,11 +1,14 @@
+"""Kiezburn Calendar Parser"""
 import re
 import json
 from datetime import datetime, timedelta
+import sys
+from pathlib import Path
 
 def parse_events_by_date(raw_text):
     lines = [line.strip() for line in raw_text.strip().split('\n') if line.strip()]
 
-    # Manual mapping for the dates mentioned in the data
+    # Manually mapping the dates
     date_mapping = {
         "Tuesday 29th": "2025-07-29",
         "Wednesday 30th": "2025-07-30",
@@ -67,57 +70,71 @@ def parse_events_by_date(raw_text):
 
     return result
 
-def generate_ics_file(events_by_date, filename='events.ics'):
-    """Generate an ICS file from the events data"""
+def generate_ics_file(events_by_date, filename='kiezburn_events.ics'):
     ics_content = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//Kiezburn Calendar//EN",
+        "PRODID:-//Kiezburn Calendar Parser//EN",
         "CALSCALE:GREGORIAN",
-        "METHOD:PUBLISH"
+        "METHOD:PUBLISH",
+        "X-WR-CALNAME:Kiezburn Events",
+        "X-WR-CALDESC:Kiezburn event schedule"
     ]
 
-    for date_str, events in events_by_date.items():
+    event_count = 0
+    for date_str, events in sorted(events_by_date.items()):
         for event in events:
-            # Parse the date and time
-            year, month, day = map(int, date_str.split('-'))
-            hour, minute = map(int, event['time'].split(':'))
+            try:
+                # Parse the date and time
+                year, month, day = map(int, date_str.split('-'))
+                hour, minute = map(int, event['time'].split(':'))
 
-            # Create datetime objects
-            start_dt = datetime(year, month, day, hour, minute)
-            # Assume 1 hour duration for each event
-            end_dt = start_dt + timedelta(hours=1)
+                # Create datetime objects
+                start_dt = datetime(year, month, day, hour, minute)
+                # Assume 1 hour duration for each event
+                end_dt = start_dt + timedelta(hours=1)
 
-            # Format for ICS (UTC format)
-            start_str = start_dt.strftime('%Y%m%dT%H%M%S')
-            end_str = end_dt.strftime('%Y%m%dT%H%M%S')
+                # Format for ICS (local time format)
+                start_str = start_dt.strftime('%Y%m%dT%H%M%S')
+                end_str = end_dt.strftime('%Y%m%dT%H%M%S')
 
-            # Create unique ID for the event
-            uid = f"{start_str}-{abs(hash(event['event'] + event['location']))}@kiezburn.local"
+                # Create unique ID for the event
+                uid = f"{start_str}-{abs(hash(event['event'] + event['location']))}@kiezburn.local"
 
-            # Escape special characters in text fields
-            summary = event['event'].replace(',', '\\,').replace(';', '\\;').replace('\\', '\\\\')
-            location = event['location'].replace(',', '\\,').replace(';', '\\;').replace('\\', '\\\\')
+                # Escape special characters in text fields according to RFC 5545
+                summary = event['event'].replace('\\', '\\\\').replace(',', '\\,').replace(';', '\\;').replace('\n', '\\n')
+                location = event['location'].replace('\\', '\\\\').replace(',', '\\,').replace(';', '\\;').replace('\n', '\\n')
 
-            # Add event to ICS
-            ics_content.extend([
-                "BEGIN:VEVENT",
-                f"UID:{uid}",
-                f"DTSTART:{start_str}",
-                f"DTEND:{end_str}",
-                f"SUMMARY:{summary}",
-                f"LOCATION:{location}",
-                f"DESCRIPTION:Kiezburn event at {location}",
-                "STATUS:CONFIRMED",
-                "TRANSP:OPAQUE",
-                "END:VEVENT"
-            ])
+                # Add event to ICS
+                ics_content.extend([
+                    "BEGIN:VEVENT",
+                    f"UID:{uid}",
+                    f"DTSTART:{start_str}",
+                    f"DTEND:{end_str}",
+                    f"SUMMARY:{summary}",
+                    f"LOCATION:{location}",
+                    f"DESCRIPTION:Kiezburn event at {location}",
+                    "STATUS:CONFIRMED",
+                    "TRANSP:OPAQUE",
+                    f"CREATED:{datetime.now().strftime('%Y%m%dT%H%M%SZ')}",
+                    "END:VEVENT"
+                ])
+                event_count += 1
+
+            except (ValueError, KeyError) as e:
+                print(f"Warning: Skipped invalid event: {event} - {e}")
+                continue
 
     ics_content.append("END:VCALENDAR")
 
     # Write to file
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(ics_content))
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(ics_content))
+        print(f"✓ Generated ICS file")
+    except IOError as e:
+        print(f"Error writing ICS file: {e}")
+        return None
 
     return filename
 
@@ -157,52 +174,84 @@ def parse_events(raw_text):
     return result
 
 
-# Example usage
-if __name__ == "__main__":
-    # Read the text file
+def main():
+    """Main function to process event data and generate output files."""
+    input_file = 'input.txt'
+    json_file = 'events.json'
+    ics_file = 'kiezburn_events.ics'
+
+    print("🎪 Kiezburn Calendar Parser")
+    print("=" * 40)
+
+    # Check if input file exists
+    if not Path(input_file).exists():
+        print(f"❌ Error: {input_file} not found!")
+        print(f"Please create {input_file} with your event schedule.")
+        sys.exit(1)
+
     try:
-        with open('input.txt', 'r', encoding='utf-8') as file:
+        # Read the input file
+        print(f"📖 Reading {input_file}")
+        with open(input_file, 'r', encoding='utf-8') as file:
             raw_text = file.read()
+
+        if not raw_text.strip():
+            print(f"❌ Error: {input_file} is empty!")
+            sys.exit(1)
 
         # Parse the events by date
         events_by_date = parse_events_by_date(raw_text)
 
-        # Save the transformed data to output.txt in JSON format
-        with open('output.txt', 'w', encoding='utf-8') as output_file:
-            json.dump(events_by_date, output_file, indent=2, ensure_ascii=False)
+        if not events_by_date:
+            print("❌ No events found! Check your input format.")
+            sys.exit(1)
 
-        # Generate ICS file for Google Calendar import
-        ics_filename = generate_ics_file(events_by_date, 'kiezburn_events.ics')
+        # Save the structured data as JSON
+        print(f"💾 Saving data to {json_file}")
+        try:
+            with open(json_file, 'w', encoding='utf-8') as output_file:
+                json.dump(events_by_date, output_file, indent=2, ensure_ascii=False)
+            print(f"✓ JSON data saved successfully")
+        except IOError as e:
+            print(f"❌ Error saving JSON file: {e}")
+            sys.exit(1)
 
-        print(f"Successfully processed events for {len(events_by_date)} dates")
-        print(f"- JSON output saved to: output.txt")
-        print(f"- ICS calendar file saved to: {ics_filename}")
+        # Generate ICS calendar file
+        print(f"📅 Generating calendar file {ics_file}")
+        ics_filename = generate_ics_file(events_by_date, ics_file)
 
-        # Count total events
+        if not ics_filename:
+            print("❌ Failed to generate ICS file")
+            sys.exit(1)
+
+        # Summary statistics
         total_events = sum(len(events) for events in events_by_date.values())
-        print(f"- Total events: {total_events}")
+        print("")
+        print("📊 SUMMARY")
+        print(f"✓ Processed {len(events_by_date)} dates")
+        print(f"✓ Total events: {total_events}")
+        print(f"✓ JSON file: {json_file}")
+        print(f"✓ Calendar file: {ics_filename}")
 
-        # Print a preview of the data structure
-        print("\nDates found:")
+        # Events per day breakdown
+        print(f"\n📅 Events per day:")
         for date in sorted(events_by_date.keys()):
-            print(f"  {date}: {len(events_by_date[date])} events")
-
-        # Show first few events from the first date
-        if events_by_date:
-            first_date = sorted(events_by_date.keys())[0]
-            print(f"\nFirst 3 events for {first_date}:")
-            for event in events_by_date[first_date][:3]:
-                print(f"  {event['time']} - {event['event']} @ {event['location']}")
-
-        print(f"\nTo import into Google Calendar:")
-        print(f"1. Open Google Calendar")
-        print(f"2. Click the '+' next to 'Other calendars'")
-        print(f"3. Select 'Import'")
-        print(f"4. Choose the file: {ics_filename}")
-        print(f"5. Select which calendar to add events to")
-        print(f"6. Click 'Import'")
+            # Convert date to more readable format
+            dt = datetime.strptime(date, '%Y-%m-%d')
+            day_name = dt.strftime('%A, %B %d')
+            print(f"  {day_name}: {len(events_by_date[date])} events")
 
     except FileNotFoundError:
-        print("Error: input.txt file not found")
+        print(f"❌ Error: {input_file} not found!")
+        print("Please make sure the input file exists.")
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON Error: {e}")
+        sys.exit(1)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Unexpected error: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
